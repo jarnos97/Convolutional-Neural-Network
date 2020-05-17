@@ -5,6 +5,7 @@ import seaborn as sns
 import numpy as np
 import matplotlib.pyplot as plt
 import pickle
+from tensorflow.keras.utils import to_categorical
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
@@ -56,9 +57,6 @@ fig.show()
 # How many negative samples are there?
 negative_samples = [i for i in y if i == 0]
 print(len(negative_samples), len(negative_samples)/3609*100, '%')
-
-# scale y? Could use the MinMAxScaler to scale, could provide better results.
-# However, would also mean the MAE becomes much less informative
 
 
 #%%
@@ -121,6 +119,7 @@ y_train = y[:1865]
 y_val = y[1865:2176]
 y_test = y[2176:3109]
 
+
 #%%
 """
 Experimenting with the optimizer and number of convolution layers
@@ -174,74 +173,27 @@ print(result_dict.items())
 
 #%%
 """
-Grid Search: Epochs and batch size
-https://machinelearningmastery.com/grid-search-hyperparameters-deep-learning-models-python-keras/
-"""
-
-
-def create_model():
-    model = Sequential()
-    # Convolution and Maxpooling layers
-    model.add(layers.Input((256, 256, 3)))
-    # Convolution layer gets 32 filters of size (3x3) (filter size should be ann odd number)
-    model.add(layers.Conv2D(32, (3, 3), activation='relu'))
-    # Maxpooling layer get size (2, 2), with stride = pool size and padding = valid, meaning no zero padding is applied
-    model.add(layers.MaxPooling2D((2, 2), strides=(2, 2), padding='valid'))  # down samples the feature map
-    model.add(layers.Conv2D(32, (3, 3), activation='relu'))
-    model.add(layers.MaxPooling2D((2, 2)))
-    model.add(layers.Conv2D(32, (3, 3), activation='relu'))
-    model.add(layers.MaxPooling2D((2, 2)))
-    model.add(layers.Conv2D(32, (3, 3), activation='relu'))  # output shape after layer: (28,28,32) (size 25088)
-    model.add(layers.MaxPooling2D((2, 2)))
-    model.add(layers.Conv2D(32, (3, 3), activation='relu'))  # output shape after layer: (12,12,32) (size 4608)
-    # Flatten output
-    model.add(layers.Flatten())
-    # Add dense layers
-    model.add(layers.Dense(64, activation='relu'))
-    model.add(layers.Dense(32, activation='relu'))
-    # The last layer is size 1, since the output is a continuous value. Also, we do not specify an activation function
-    # since it is a regression task and the y-values are not transformed
-    model.add(layers.Dense(1))
-    model.compile(optimizer='adam', loss='mean_absolute_error')
-    return model
-
-
-cnn = KerasClassifier(build_fn=create_model, verbose=0)
-param_grid = {'batch_size': [32, 64, 96], 'epochs': [10, 50, 100]}
-grid = GridSearchCV(estimator=cnn, param_grid=param_grid, scoring='neg_mean_absolute_error', n_jobs=-1, cv=3)
-grid_result = grid.fit(X_val, y_val)
-print(grid_result)
-
-
-#%%
-"""
-Grid Search Learning Rate (&  momentum?)
-https://machinelearningmastery.com/grid-search-hyperparameters-deep-learning-models-python-keras/
-Used link to get a general idea of normal learning rates/momentum and increments
-
-"""
-cnn = KerasClassifier(build_fn=create_model, epochs='best epochsss', batch_size='best batchsize')
-param_grid = {'learning_rate': [0.001, 0.01, 0.1, 0.2, 0.3], 'momentum': [0.0, 0.2, 0.4, 0.6, 0.8]}
-grid = GridSearchCV(estimator=cnn, param_grid=param_grid, scoring='neg_mean_absolute_error', n_jobs=-1, cv=3)
-grid_result = grid.fit(X_val, y_val)
-
-#%%
-"""
-Grid Search Dropout (and weight constraint) --> only if overfitting
-I decided not to add dropout layers after the convolution layers, because I have found multiple articles stating that
-this is not particularly useful. Instead...
-"""
-
-
-#%%
-"""
 Train Initial Model
+We want to try to mimic the parameter settings in from paper. However, we do not have access to the same computational
+power. 
+In the paper the learning rate is set to 1e-5 (0.00001), batch size = 6, and (max) epochs = 2000.
+For the current study, we will limit learning rate to 0.01, batch size 12 and epochs 50. the smaller the learning rate,
+the slower the learning. We cannot do this, since we will be doing less epochs. 
+Some dropout layers were added to the model. I decided not to add dropout layers after the convolution layers, 
+because I have found multiple articles stating that
+this is not particularly useful. 
+In addition, I have put dropout layers after the input and dense layers. The effect of the dropout layers was very small
+I also varies the dropout rate, did not really have an effect. Instead one dropout layer is added after the input. 
+The dropout layer after the input did seem to make the model worse. So, I chose to keep the two dropout layers after the
+first two dense layers, with a rate of 0.2. Dropout could become more important as we improve the model, since it will 
+be more prone to overfitting. 
 """
-def create_model(optim, loss_func):
+
+
+def create_model(loss_func):
     model = Sequential()
     # Convolution and Maxpooling layers
     model.add(layers.Input((256, 256, 3)))
-    model.add(layers.Dropout(0.2))
     # Convolution layer gets 32 filters of size (3x3) (filter size should be ann odd number)
     model.add(layers.Conv2D(32, (3, 3), activation='relu'))
     # Maxpooling layer get size (2, 2), with stride = pool size and padding = valid, meaning no zero padding is applied
@@ -260,16 +212,18 @@ def create_model(optim, loss_func):
     model.add(layers.Dropout(0.2))
     model.add(layers.Dense(32, activation='relu'))
     model.add(layers.Dropout(0.2))
-    # add dropout?
     # The last layer is size 1, since the output is a continuous value. Also, we do not specify an activation function
     # since it is a regression task and the y-values are not transformed
     model.add(layers.Dense(1))
-    model.compile(optimizer=optim, loss=loss_func) # add learning rate and momentum here
+    opt = keras.optimizers.Adam(learning_rate=0.01)
+    model.compile(optimizer=opt, loss=loss_func)  # add learning rate and momentum here
     return model
 
+
+#%%
 # Initialize model and fit model
-cnn = create_model(optim='adam', loss_func='mean_absolute_error')
-cnn.fit(X_train, y_train, epochs=3, batch_size=64, validation_data=(X_val, y_val))
+cnn = create_model(loss_func='mean_absolute_error')
+cnn.fit(X_train, y_train, epochs=50, batch_size=12, validation_data=(X_val, y_val))
 
 # Saving the model and weights to disk
 cnn_json = cnn.to_json()
@@ -277,35 +231,103 @@ with open("cnn.json", "w") as json_file:
     json_file.write(cnn_json)
 cnn.save_weights("cnn.h5")
 
-# Look at the negative samples. Is it indeed a lower MAE?
-
-#%%
-# Model history without dropout
-history = cnn.history.history
-history['loss']
-history['val_loss']
+# There does not seem to be any improvement in the loss. Clearly, the task is to difficult for this kind of network.
+# Changing the y to a categorical variable (classification task) might help the model to make more sens of the data
 
 
 #%%
-# Model history with dropout
-history_2 = cnn.history.history
-history_2['loss']
-history_2['val_loss']
+# Inspecting the distribution of our y
+print(f"Range of y: ({min(y)}, {max(y)})")
+y_temp = [i for i in y if i < 2000]
+fig, axx = plt.subplots(1, 2, figsize=(15, 5))
+sns.distplot(y, ax=axx[0])
+axx[0].set_title('y')
+sns.distplot(y_temp, ax=axx[1])
+axx[1].set_title('y')
+fig.show()
 
+# The data is split into four categories 0 people (negative samples), 0-500, 500-1000 and >1000
+y_categorical = []
+for value in y:
+    if value == 0:
+        y_categorical.append(value)
+    elif value < 500:
+        y_categorical.append(1)
+    elif value < 1000:
+        y_categorical.append(2)
+    else:
+        y_categorical.append(3)
+
+y_categorical = np.asarray(y_categorical)
+y_categorical = to_categorical(y_categorical)  # One-hot encode
+
+# Save y_categorical to disk
+pickle.dump(y_categorical, open('y_categorical.pickle', 'wb'))
+
+# Create train, validation and test sets
+y_train_cat = y_categorical[:1865]
+y_val_cat = y_categorical[1865:2176]
+y_test_cat = y_categorical[2176:3109]
 
 #%%
-# Model history with dropout (als after input layer)
-history_3 = cnn.history.history
-history_3['loss']
-history_3['val_loss']
+"""
+Now we will adapt the model and try again
+"""
+
+
+def create_model(loss_func):
+    model = Sequential()
+    # Convolution and Maxpooling layers
+    model.add(layers.Input((256, 256, 3)))
+    # Convolution layer gets 32 filters of size (3x3) (filter size should be ann odd number)
+    model.add(layers.Conv2D(32, (3, 3), activation='relu'))
+    # Maxpooling layer get size (2, 2), with stride = pool size and padding = valid, meaning no zero padding is applied
+    model.add(layers.MaxPooling2D((2, 2), strides=(2, 2), padding='valid'))  # down samples the feature map
+    model.add(layers.Conv2D(32, (3, 3), activation='relu'))
+    model.add(layers.MaxPooling2D((2, 2)))
+    model.add(layers.Conv2D(32, (3, 3), activation='relu'))
+    model.add(layers.MaxPooling2D((2, 2)))
+    model.add(layers.Conv2D(32, (3, 3), activation='relu'))  # output shape after layer: (28,28,32) (size 25088)
+    model.add(layers.MaxPooling2D((2, 2)))
+    model.add(layers.Conv2D(32, (3, 3), activation='relu'))  # output shape after layer: (12,12,32) (size 4608)
+    # Flatten output
+    model.add(layers.Flatten())
+    # Add dense layers
+    model.add(layers.Dense(64, activation='relu'))
+    model.add(layers.Dropout(0.2))
+    model.add(layers.Dense(32, activation='relu'))
+    model.add(layers.Dropout(0.2))
+    # The last layer is size 4 since we have four classes
+    # Softmax activation is a standard for multi-class classification
+    model.add(layers.Dense(4, activation='softmax'))
+    opt = keras.optimizers.Adam(learning_rate=0.01)
+    # The loss function is adapted for categorical classification and the accuracy metric is added
+    model.compile(optimizer=opt, loss=loss_func, metrics=['accuracy'])
+    return model
 
 
 #%%
 """
-Making Predictions on the first model
+Fitting the new model
+"""
+cnn_classifier = create_model(loss_func='categorical_crossentropy')  # new loss function
+cnn_classifier.fit(X_train, y_train_cat, epochs=50, batch_size=12, validation_data=(X_val, y_val_cat))
+
+# Saving the model and weights to disk
+cnn_classifier_json = cnn-cnn_classifier.to_json()
+with open("cnn_classifier.json", "w") as json_file:
+    json_file.write(cnn_classifier_json)
+cnn_classifier.save_weights("cnn_classifier.h5")
+
+# The new model also does not seem to learn. Converting y to categorical values has not helped to simplify the task.
+
+
+#%%
+"""
+Making Predictions on the second model
 """
 # Predicting y on test-set
-preds = cnn.predict(X_test)
+preds = cnn_classifier.predict(X_test)
 preds = np.reshape(preds, (933,))
 cnn_df = pd.DataFrame({"y_test": y_test, "predictions": preds})
 
@@ -322,17 +344,19 @@ positives_df = cnn_df.loc[cnn_df['y_test'] > 0]
 print("MAE positive samples:", positives_df['abs_difference'].mean())
 
 print(max(preds))
+
+
 #%%
 """
 Random OverSampling
-The random oversamling is only applied on the training data, to prevent data leakage.
+The random oversampling is only applied on the training data, to prevent data leakage.
 """
 # Negative samples
 y_train_negatives = [i for i in y_train if i == 0]
 print(y_train)
 print(len(y_train))
 
-# Let's increase the amount of negtative samples by xx% (= xx samples)
+# Let's increase the amount of negative samples by xx% (= xx samples)
 ros = RandomOverSampler(sampling_strategy={'0': n_negative_samples})
 X_train_ros, y_train_ros = ros.fit_resample(X_train, y_train)
 
