@@ -9,6 +9,14 @@ import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
 from tensorflow.keras import Sequential
+import h5py
+import pandas as pd
+import timeit
+from sklearn.model_selection import GridSearchCV
+from tensorflow.keras.wrappers.scikit_learn import KerasClassifier
+import logging
+logging.getLogger('tensorflow').disabled = True
+
 
 #%%
 """
@@ -25,10 +33,13 @@ def retrieve_y(json_folder):
         with open(path) as f:
             data = json.load(f)
             n_humans.append(data['human_num'])
+    n_humans = np.array(n_humans)
+    n_humans = n_humans.astype('float32')
     return n_humans
 
 
 y = retrieve_y('C:/Users/jarno/Documents/MDSE/Semester 2/Deep Learning/Project/NWPU-Crowd/jsons')
+# Save y to disk
 pickle.dump(y, open('y.pickle', 'wb'))
 
 # Inspecting the distribution of our y
@@ -44,6 +55,9 @@ fig.show()
 # How many negative samples are there?
 negative_samples = [i for i in y if i == 0]
 print(len(negative_samples), len(negative_samples)/3609*100, '%')
+
+# scale y? Could use the MinMAxScaler to scale, could provide better results.
+# However, would also mean the MAE becomes much less informative
 
 
 #%%
@@ -82,16 +96,15 @@ def resizing_images(image_folder, max_size):
         data = np.asarray(new_image)
         images.append(data)
         image.close()
+    images = np.asarray(images)
+    images = images.astype('float32') / 255
     return images
 
 
 X = resizing_images('C:/Users/jarno/Documents/MDSE/Semester 2/Deep Learning/Project/NWPU-Crowd/images',  256)
+# Save X to disk
 pickle.dump(X, open('X.pickle', 'wb'))
 
-# Let´s look at a resized image
-img = Image.fromarray(X[0], 'RGB')
-print(img.size)
-img.show()
 
 #%%
 """
@@ -109,13 +122,202 @@ y_test = y[2176:3109]
 
 #%%
 """
-Initial CNN
-Perfmance metrics: MAE, MSE
+Experimenting with the optimizer and number of convolution layers
+Performance metrics: MAE, MSE
 """
-model = Sequential()
-# stage 1 convulutions
-# stage 2 acitvations through nonlinear activation function
-# stage 3 pooling to modify output
 
 
-# Use random search to tune hyperparameters?
+def convnet_size(optim, loss_func, n_conv_layers):
+    """
+    The function builds a CNN. The optimizer, loss function and number of convolution layers are specified with the
+    parameters. The minimal number of convolution layers is 1, each additional convolution layers is accompanied by a
+    MaxPooling layer.
+    :param optim:
+    :param loss_func:
+    :param n_conv_layers:
+    :return:
+    """
+    model = Sequential()
+    # Convolution and Maxpooling layers
+    model.add(layers.Input((256, 256, 3)))
+    # Experimenting with the amount of convolution layers
+    for i in range(n_conv_layers-1):
+        model.add(layers.Conv2D(32, (3, 3), activation='relu'))
+        model.add(layers.MaxPooling2D((2, 2), strides=(2, 2), padding='valid'))
+    model.add(layers.Conv2D(32, (3, 3), activation='relu'))  # output shape after layer: (12,12,32) (size 4608)
+    # Flatten output
+    model.add(layers.Flatten())
+    # Add dense layers
+    model.add(layers.Dense(64, activation='relu'))
+    model.add(layers.Dense(32, activation='relu'))
+    model.add(layers.Dense(1))
+    model.compile(optimizer=optim, loss=loss_func, metrics=['MeanSquaredError'])
+    return model
+
+
+# We will train models (3 epochs) for two optimizers and 5 sizes of the model (amount of conv layers and maxpooling)
+param_dict = {'optim': ['adam', 'rmsprop'], 'n_conv_layers': [2, 3, 4, 5, 6]}
+result_dict = {}
+for optimizer in param_dict['optim']:
+    for n_conv_layer in param_dict['n_conv_layers']:
+        cnn = convnet_size(optim=optimizer, loss_func='mean_absolute_error', n_conv_layers=n_conv_layer)
+        cnn.fit(X_train, y_train, epochs=3, batch_size=64, validation_data=(X_val, y_val))
+        result_dict[f'{optimizer}_{n_conv_layer}'] = [cnn.history.history['loss'][2], cnn.history.history['val_loss'][2]]
+
+print(result_dict.items())
+# Overall, the n_conv_layer does not seem to have a very large effect on MAE. We will use 5 convolution layers. This
+# seems to be a good trade of between complexity of the model and and sensitivity to changes in the feature map.
+# Furthermore, this greatly decreases the amount of trainable parameters compared to less convolution layers.
+# The adam optimizer performs better in every case, thus we will use for the other models.
+
+
+#%%
+"""
+Grid Search: Epochs and batch size
+https://machinelearningmastery.com/grid-search-hyperparameters-deep-learning-models-python-keras/
+"""
+
+
+def create_model():
+    model = Sequential()
+    # Convolution and Maxpooling layers
+    model.add(layers.Input((256, 256, 3)))
+    # Convolution layer gets 32 filters of size (3x3) (filter size should be ann odd number)
+    model.add(layers.Conv2D(32, (3, 3), activation='relu'))
+    # Maxpooling layer get size (2, 2), with stride = pool size and padding = valid, meaning no zero padding is applied
+    model.add(layers.MaxPooling2D((2, 2), strides=(2, 2), padding='valid'))  # down samples the feature map
+    model.add(layers.Conv2D(32, (3, 3), activation='relu'))
+    model.add(layers.MaxPooling2D((2, 2)))
+    model.add(layers.Conv2D(32, (3, 3), activation='relu'))
+    model.add(layers.MaxPooling2D((2, 2)))
+    model.add(layers.Conv2D(32, (3, 3), activation='relu'))  # output shape after layer: (28,28,32) (size 25088)
+    model.add(layers.MaxPooling2D((2, 2)))
+    model.add(layers.Conv2D(32, (3, 3), activation='relu'))  # output shape after layer: (12,12,32) (size 4608)
+    # Flatten output
+    model.add(layers.Flatten())
+    # Add dense layers
+    model.add(layers.Dense(64, activation='relu'))
+    model.add(layers.Dense(32, activation='relu'))
+    # The last layer is size 1, since the output is a continuous value. Also, we do not specify an activation function
+    # since it is a regression task and the y-values are not transformed
+    model.add(layers.Dense(1))
+    model.compile(optimizer='adam', loss='mean_absolute_error')
+    return model
+
+
+cnn = KerasClassifier(build_fn=create_model, verbose=0)
+param_grid = {'batch_size': [32, 64, 96], 'epochs': [10, 50, 100]}
+grid = GridSearchCV(estimator=cnn, param_grid=param_grid, scoring='neg_mean_absolute_error', n_jobs=-1, cv=3)
+grid_result = grid.fit(X_val, y_val)
+print(grid_result)
+
+
+#%%
+"""
+Grid Search Learning Rate &  momentum
+"""
+cnn = KerasClassifier(bui)
+
+#%%
+"""
+Grid Search Dropout
+"""
+
+
+#%%
+"""
+Train Initial Model
+"""
+
+
+#%%
+"""
+Random OverSampling
+"""
+
+
+#%%
+"""
+Different loss function 1
+"""
+
+
+#%%
+"""
+Different loss function 2
+"""
+
+
+#%%
+def convnet(optim, loss_func):
+    model = Sequential()
+    # Convolution and Maxpooling layers
+    model.add(layers.Input((256, 256, 3)))
+    # Convolution layer gets 32 filters of size (3x3) (filter size should be ann odd number)
+    model.add(layers.Conv2D(32, (3, 3), activation='relu'))
+    # Maxpooling layer get size (2, 2), with stride = pool size and padding = valid, meaning no zero padding is applied
+    model.add(layers.MaxPooling2D((2, 2), strides=(2, 2), padding='valid'))  # down samples the feature map
+    model.add(layers.Conv2D(32, (3, 3), activation='relu'))
+    model.add(layers.MaxPooling2D((2, 2)))
+    model.add(layers.Conv2D(32, (3, 3), activation='relu'))
+    model.add(layers.MaxPooling2D((2, 2)))
+    model.add(layers.Conv2D(32, (3, 3), activation='relu'))  # output shape after layer: (28,28,32) (size 25088)
+    model.add(layers.MaxPooling2D((2, 2)))
+    model.add(layers.Conv2D(32, (3, 3), activation='relu'))  # output shape after layer: (12,12,32) (size 4608)
+    # Flatten output
+    model.add(layers.Flatten())
+    # Add dense layers
+    model.add(layers.Dense(64, activation='relu'))
+    model.add(layers.Dense(32, activation='relu'))
+    # The last layer is size 1, since the output is a continuous value. Also, we do not specify an activation function
+    # since it is a regression task and the y-values are not transformed
+    model.add(layers.Dense(1))
+    model.compile(optimizer=optim, loss=loss_func)
+    return model
+
+# Initialize model
+cnn = convnet(optim='adam', loss_func='mean_absolute_error')
+start = timeit.timeit()
+# explain epochs and batch size
+cnn.fit(X_train, y_train, epochs=50, batch_size=64, validation_data=(X_val, y_val))
+end = timeit.timeit()
+print("Fitting time:", end-start)
+
+# Saving the model and weights to disk
+cnn_json = cnn.to_json()
+with open("cnn_2.json", "w") as json_file:
+    json_file.write(cnn_json)
+cnn.save_weights("cnn_2.h5")
+
+
+
+#%%
+"""
+Making Predictions on the first model
+"""
+# Predicting y on test-set
+preds = cnn.predict(X_test)
+preds = np.reshape(preds, (933,))
+cnn_df = pd.DataFrame({"y_test": y_test, "predictions": preds})
+
+# Add absolute difference
+cnn_df['abs_difference'] = abs(y_test - preds)
+
+# MAE
+print("MAE:", cnn_df['abs_difference'].mean())  # still quite large
+
+# Negative samples
+negatives_df = cnn_df.loc[cnn_df['y_test'] == 0]
+print("MAE negative samples:", negatives_df['abs_difference'].mean())
+positives_df = cnn_df.loc[cnn_df['y_test'] > 0]
+print("MAE positive samples:", positives_df['abs_difference'].mean())
+
+# add dropout ; it is usually set between 0.2 and 0.5.
+# tweak learning rate
+# momentum (not at the same time with learning rate
+# convert y - using minmaxscaler
+
+# if the y is transformed use linear activation function in the last layer. Otherwise, (for the actual y values)
+# do not specify a activation function
+
+print(cnn.history['loss'])
