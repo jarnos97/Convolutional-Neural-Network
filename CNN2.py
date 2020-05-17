@@ -11,10 +11,7 @@ from tensorflow import keras
 from tensorflow.keras import layers
 from tensorflow.keras import Sequential
 import h5py
-import pandas as pd
-import timeit
-from sklearn.model_selection import GridSearchCV
-from tensorflow.keras.wrappers.scikit_learn import KerasClassifier
+from tensorflow.keras.models import model_from_json
 from imblearn.over_sampling import RandomOverSampler
 import logging
 logging.getLogger('tensorflow').disabled = True
@@ -258,6 +255,12 @@ for value in y:
     else:
         y_categorical.append(3)
 
+print(f"There are {y_categorical.count(0)} negative images")
+print(f"There are {y_categorical.count(1)} images with 0-500 people")
+print(f"There are {y_categorical.count(2)} images with 500-1000 people")
+print(f"There are {y_categorical.count(3)} images with >= 1000 people")
+
+
 y_categorical = np.asarray(y_categorical)
 y_categorical = to_categorical(y_categorical)  # One-hot encode
 
@@ -324,26 +327,23 @@ cnn_classifier.save_weights("cnn_classifier.h5")
 
 #%%
 """
-Making Predictions on the second model
+Making Predictions on the classification model
 """
+# # load the model
+# json_file = open('cnn_classifier.json', 'r')
+# loaded_model_json = json_file.read()
+# json_file.close()
+# cnn_classifier = model_from_json(loaded_model_json)
+# cnn_classifier.load_weights('cnn_classifier.h5')
+# cnn_classifier.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+
 # Predicting y on test-set
+test_loss, test_acc = cnn_classifier.evaluate(X_test, y_test_cat)
+print(test_acc)  # This seems alright, but the model probably just always predicts class 1.
 preds = cnn_classifier.predict(X_test)
-preds = np.reshape(preds, (933,))
-cnn_df = pd.DataFrame({"y_test": y_test, "predictions": preds})
-
-# Add absolute difference
-cnn_df['abs_difference'] = abs(y_test - preds)
-
-# MAE
-print("MAE:", cnn_df['abs_difference'].mean())  # still quite large
-
-# Negative samples
-negatives_df = cnn_df.loc[cnn_df['y_test'] == 0]
-print("MAE negative samples:", negatives_df['abs_difference'].mean())
-positives_df = cnn_df.loc[cnn_df['y_test'] > 0]
-print("MAE positive samples:", positives_df['abs_difference'].mean())
-
-print(max(preds))
+preds_2 = np.argmax(preds, axis=1)
+# The classifier predicts the exact same thing every time, with the same probability
+# We will still try to implement the ROS on the negative samples, to see if it has any effect.
 
 
 #%%
@@ -352,18 +352,53 @@ Random OverSampling
 The random oversampling is only applied on the training data, to prevent data leakage.
 """
 # Negative samples
-y_train_negatives = [i for i in y_train if i == 0]
-print(y_train)
-print(len(y_train))
+y_train_negatives = [i for i in y_train_cat if i[0] == 1]
+print(len(y_train_negatives))
 
-# Let's increase the amount of negative samples by xx% (= xx samples)
-ros = RandomOverSampler(sampling_strategy={'0': n_negative_samples})
-X_train_ros, y_train_ros = ros.fit_resample(X_train, y_train)
+# In order to apply the ROS, we need the y to be a single number (not one-hot encoded)
+y_categorical = []
+for value in y:
+    if value == 0:
+        y_categorical.append(value)
+    elif value < 500:
+        y_categorical.append(1)
+    elif value < 1000:
+        y_categorical.append(2)
+    else:
+        y_categorical.append(3)
+
+y_categorical = np.asarray(y_categorical)
+
+# Create train, validation and test sets
+y_train_cat = y_categorical[:1865]
+y_val_cat = y_categorical[1865:2176]
+y_test_cat = y_categorical[2176:3109]
+print(y_train_cat)
+# Let's increase the amount of negative samples by 50% (=211 samples)
+ros = RandomOverSampler(sampling_strategy={0: 211}, random_state=42)
+X_train_ros, y_train_ros = ros.fit_resample(X_train, y_train_cat)
 
 # retrain the model
-cnn_2 = create_model(optim='adam', loss_func='mean_absolute_error')
-cnn_2.fit(X_train_ros, y_train_ros, epochs=3, batch_size=64, validation_data=(X_val, y_val))
+#cnn_2 = create_model(optim='adam', loss_func='mean_absolute_error')
+#cnn_2.fit(X_train_ros, y_train_ros, epochs=3, batch_size=64, validation_data=(X_val, y_val))
 
+X_temp = [[1,2,3,4,5,6,7,8],[1,2,3,4,5,6,7,8],
+          [1,2,3,4,5,6,7,8],[1,2,3,4,5,6,7,8],
+          [1,2,3,4,5,6,7,8],[1,2,3,4,5,6,7,8],
+          [1,2,3,4,5,6,7,8],[1,2,3,4,5,6,7,8],
+          [1,2,3,4,5,6,7,8],[1,2,3,4,5,6,7,8],
+          [1,2,3,4,5,6,7,8],[1,2,3,4,5,6,7,8],
+          [1,2,3,4,5,6,7,8],[1,2,3,4,5,6,7,8],
+          [1,2,3,4,5,6,7,8],[1,2,3,4,5,6,7,8]]
+X_temp = np.asarray(X_temp)
+X_temp = np.reshape(X_temp, (-1,1))
+print(len(X_temp))
+y_temp = [0,1,1,1,1,1,1,0,1,1,1,0,1,1,1,0]
+print(len(y_temp))
+ros_temp = RandomOverSampler(sampling_strategy={0: 5})
+X_temp_2, y_temp_2 = ros_temp.fit_resample(X_temp, y_temp)
+print(X_temp_2)
+print(y_temp_2)
 
 #%%
 """
@@ -374,6 +409,33 @@ Different loss function 1
 #%%
 """
 Different loss function 2
+categorical_crossentropy from: https://keras.io/api/losses/probabilistic_losses/#categoricalcrossentropy-function
+formula focal loss from paper: https://link.springer.com/article/10.1186/s40537-019-0192-5
+defining a custom loss function: https://heartbeat.fritz.ai/how-to-create-a-custom-loss-function-in-keras-637bd312e9ab
 """
 
 
+def focal_loss(y_true, y_pred, gamma):
+    """
+    Function re-shapes the cross entropy in order to reduce the impact that easily classified samples have on the loss.
+    :param gamma:
+    :param y_true:
+    :param y_pred:
+    :return:
+    """
+    alphas_classes = np.array([1, 0.25, 0.25, 0.25])  # Decreases values of class 2,3,4. Minority class stays the same #  TODO: update
+    a = y_true*alphas_classes
+    a = np.amax(a, axis=1)  # returns the max (only non 0) value value of a
+    p = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
+    fl = (-a*(1-p)**gamma) * tf.math.log(p)
+    return fl
+
+
+y_t = [[0, 1, 0, 0], [1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0]]
+y_p = [[0.05, 0.95, 0, 0.1], [0.3, 0.65, 0, 0.05], [0.05, 0.2, 0.7, 0.1], [0.05, 0.95, 0, 0.1]]
+
+loss = tf.keras.losses.categorical_crossentropy(y_t, y_p)
+print(loss)
+
+fl_loss = focal_loss(y_t, y_p, gamma=2)
+print(fl_loss)
