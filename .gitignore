@@ -6,3 +6,10 @@ cnn_50_001.json
 cnn_classifier.h5
 cnn_classifier.json
 CNN.py
+cnn_50_0001.h5
+cnn_50_0001.json
+cnn_100_0001.h5
+cnn_100_0001.json
+focal_loss.py
+jarno smit 1274850.py
+Layer_images
