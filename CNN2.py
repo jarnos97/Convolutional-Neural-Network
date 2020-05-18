@@ -13,6 +13,7 @@ from tensorflow.keras import Sequential
 import h5py
 from tensorflow.keras.models import model_from_json
 from imblearn.over_sampling import RandomOverSampler
+import pandas as pd
 import logging
 logging.getLogger('tensorflow').disabled = True
 
@@ -174,7 +175,7 @@ Train Initial Model
 We want to try to mimic the parameter settings in from paper. However, we do not have access to the same computational
 power. 
 In the paper the learning rate is set to 1e-5 (0.00001), batch size = 6, and (max) epochs = 2000.
-For the current study, we will limit learning rate to 0.01, batch size 12 and epochs 50. the smaller the learning rate,
+For the current study, we will limit learning rate to 0.001, batch size 12 and epochs 50. the smaller the learning rate,
 the slower the learning. We cannot do this, since we will be doing less epochs. 
 Some dropout layers were added to the model. I decided not to add dropout layers after the convolution layers, 
 because I have found multiple articles stating that
@@ -187,7 +188,7 @@ be more prone to overfitting.
 """
 
 
-def create_model(loss_func):
+def create_model(loss_func, learning_rate, dropout):
     model = Sequential()
     # Convolution and Maxpooling layers
     model.add(layers.Input((256, 256, 3)))
@@ -206,150 +207,186 @@ def create_model(loss_func):
     model.add(layers.Flatten())
     # Add dense layers
     model.add(layers.Dense(64, activation='relu'))
-    model.add(layers.Dropout(0.2))
+    model.add(layers.Dropout(dropout))
     model.add(layers.Dense(32, activation='relu'))
-    model.add(layers.Dropout(0.2))
+    model.add(layers.Dropout(dropout))
     # The last layer is size 1, since the output is a continuous value. Also, we do not specify an activation function
     # since it is a regression task and the y-values are not transformed
     model.add(layers.Dense(1))
-    opt = keras.optimizers.Adam(learning_rate=0.01)
-    model.compile(optimizer=opt, loss=loss_func)  # add learning rate and momentum here
+    opt = keras.optimizers.Adam(learning_rate=learning_rate)
+    model.compile(optimizer=opt, loss=loss_func)
     return model
 
 
 #%%
 # Initialize model and fit model
-cnn = create_model(loss_func='mean_absolute_error')
-cnn.fit(X_train, y_train, epochs=50, batch_size=12, validation_data=(X_val, y_val))
+cnn_50_001 = create_model(loss_func='mean_absolute_error', learning_rate=0.001, dropout=0.2)
+cnn_50_001.fit(X_train, y_train, epochs=50, batch_size=12, validation_data=(X_val, y_val))
 
 # Saving the model and weights to disk
-cnn_json = cnn.to_json()
-with open("cnn.json", "w") as json_file:
+cnn_json = cnn_50_001.to_json()
+with open("cnn_50_001.json", "w") as json_file:
     json_file.write(cnn_json)
-cnn.save_weights("cnn.h5")
-
-# There does not seem to be any improvement in the loss. Clearly, the task is to difficult for this kind of network.
-# Changing the y to a categorical variable (classification task) might help the model to make more sens of the data
-
-
-#%%
-# Inspecting the distribution of our y
-print(f"Range of y: ({min(y)}, {max(y)})")
-y_temp = [i for i in y if i < 2000]
-fig, axx = plt.subplots(1, 2, figsize=(15, 5))
-sns.distplot(y, ax=axx[0])
-axx[0].set_title('y')
-sns.distplot(y_temp, ax=axx[1])
-axx[1].set_title('y')
-fig.show()
-
-# The data is split into four categories 0 people (negative samples), 0-500, 500-1000 and >1000
-y_categorical = []
-for value in y:
-    if value == 0:
-        y_categorical.append(value)
-    elif value < 500:
-        y_categorical.append(1)
-    elif value < 1000:
-        y_categorical.append(2)
-    else:
-        y_categorical.append(3)
-
-print(f"There are {y_categorical.count(0)} negative images")
-print(f"There are {y_categorical.count(1)} images with 0-500 people")
-print(f"There are {y_categorical.count(2)} images with 500-1000 people")
-print(f"There are {y_categorical.count(3)} images with >= 1000 people")
-
-
-y_categorical = np.asarray(y_categorical)
-y_categorical = to_categorical(y_categorical)  # One-hot encode
-
-# Save y_categorical to disk
-pickle.dump(y_categorical, open('y_categorical.pickle', 'wb'))
-
-# Create train, validation and test sets
-y_train_cat = y_categorical[:1865]
-y_val_cat = y_categorical[1865:2176]
-y_test_cat = y_categorical[2176:3109]
-
-#%%
-"""
-Now we will adapt the model and try again
-"""
-
-
-def create_model(loss_func):
-    model = Sequential()
-    # Convolution and Maxpooling layers
-    model.add(layers.Input((256, 256, 3)))
-    # Convolution layer gets 32 filters of size (3x3) (filter size should be ann odd number)
-    model.add(layers.Conv2D(32, (3, 3), activation='relu'))
-    # Maxpooling layer get size (2, 2), with stride = pool size and padding = valid, meaning no zero padding is applied
-    model.add(layers.MaxPooling2D((2, 2), strides=(2, 2), padding='valid'))  # down samples the feature map
-    model.add(layers.Conv2D(32, (3, 3), activation='relu'))
-    model.add(layers.MaxPooling2D((2, 2)))
-    model.add(layers.Conv2D(32, (3, 3), activation='relu'))
-    model.add(layers.MaxPooling2D((2, 2)))
-    model.add(layers.Conv2D(32, (3, 3), activation='relu'))  # output shape after layer: (28,28,32) (size 25088)
-    model.add(layers.MaxPooling2D((2, 2)))
-    model.add(layers.Conv2D(32, (3, 3), activation='relu'))  # output shape after layer: (12,12,32) (size 4608)
-    # Flatten output
-    model.add(layers.Flatten())
-    # Add dense layers
-    model.add(layers.Dense(64, activation='relu'))
-    model.add(layers.Dropout(0.2))
-    model.add(layers.Dense(32, activation='relu'))
-    model.add(layers.Dropout(0.2))
-    # The last layer is size 4 since we have four classes
-    # Softmax activation is a standard for multi-class classification
-    model.add(layers.Dense(4, activation='softmax'))
-    opt = keras.optimizers.Adam(learning_rate=0.01)
-    # The loss function is adapted for categorical classification and the accuracy metric is added
-    model.compile(optimizer=opt, loss=loss_func, metrics=['accuracy'])
-    return model
+cnn_50_001.save_weights("cnn_50_001.h5")
 
 
 #%%
 """
-Fitting the new model
+Making Predictions on the regression model
 """
-cnn_classifier = create_model(loss_func='categorical_crossentropy')  # new loss function
-cnn_classifier.fit(X_train, y_train_cat, epochs=50, batch_size=12, validation_data=(X_val, y_val_cat))
-
-# Saving the model and weights to disk
-cnn_classifier_json = cnn-cnn_classifier.to_json()
-with open("cnn_classifier.json", "w") as json_file:
-    json_file.write(cnn_classifier_json)
-cnn_classifier.save_weights("cnn_classifier.h5")
-
-# The new model also does not seem to learn. Converting y to categorical values has not helped to simplify the task.
-
-
-#%%
-"""
-Making Predictions on the classification model
-"""
-# # load the model
-# json_file = open('cnn_classifier.json', 'r')
+# load the model
+# json_file = open('cnn_50_001.json', 'r')
 # loaded_model_json = json_file.read()
 # json_file.close()
-# cnn_classifier = model_from_json(loaded_model_json)
-# cnn_classifier.load_weights('cnn_classifier.h5')
-# cnn_classifier.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+# cnn_50_001 = model_from_json(loaded_model_json)
+# cnn_50_001.load_weights('cnn_50_001.h5')
+# cnn_50_001.compile(optimizer='adam', loss='mean_absolute_error')
 
 # Predicting y on test-set
-test_loss, test_acc = cnn_classifier.evaluate(X_test, y_test_cat)
-print(test_acc)  # This seems alright, but the model probably just always predicts class 1.
-preds = cnn_classifier.predict(X_test)
-preds_2 = np.argmax(preds, axis=1)
-# The classifier predicts the exact same thing every time, with the same probability
-# We will still try to implement the ROS on the negative samples, to see if it has any effect.
+preds_50_001 = cnn_50_001.predict(X_test)
+preds_50_001 = np.reshape(preds_50_001, (933,))
+cnn_50_001_df = pd.DataFrame({"y_test": y_test, "predictions": preds_50_001})
+
+# Add absolute difference
+cnn_50_001_df['abs_difference'] = abs(y_test - preds_50_001)
+print("MAE Test:", cnn_50_001_df['abs_difference'].mean())
+
+# Negative samples
+negatives_df = cnn_50_001_df.loc[cnn_50_001_df['y_test'] == 0]
+print("MAE negative samples:", negatives_df['abs_difference'].mean())
+positives_df = cnn_50_001_df.loc[cnn_50_001_df['y_test'] > 0]
+print("MAE positive samples:", positives_df['abs_difference'].mean())
+
+# What is the range of predictions
+print(f'Lowest prediction: {min(preds_50_001)}, highest prediction {max(preds_50_001)}')
+
+# The model performs decently, it does seem to overfit (training loss is quite a bit lower).
+# Let's decrease the learning rate
+
+
+#%%
+# We set the learning rate to 0.0001
+cnn_50_0001 = create_model(loss_func='mean_absolute_error', learning_rate=0.0001, dropout=0.2)
+cnn_50_0001.fit(X_train, y_train, epochs=50, batch_size=12, validation_data=(X_val, y_val))
+
+# Saving the model and weights to disk
+cnn_json = cnn_50_0001.to_json()
+with open("cnn_50_0001.json", "w") as json_file:
+    json_file.write(cnn_json)
+cnn_50_0001.save_weights("cnn_50_0001.h5")
+
+
+#%%
+"""
+Making Predictions on the regression model
+"""
+# load the model
+# json_file = open('cnn_50_0001.json', 'r')
+# loaded_model_json = json_file.read()
+# json_file.close()
+# cnn_50_0001 = model_from_json(loaded_model_json)
+# cnn_50_0001.load_weights('cnn_50_0001.h5')
+# cnn_50_0001.compile(optimizer='adam', loss='mean_absolute_error')
+
+# Predicting y on test-set
+preds_50_0001 = cnn_50_0001.predict(X_test)
+preds_50_0001 = np.reshape(preds_50_0001, (933,))
+cnn_50_0001_df = pd.DataFrame({"y_test": y_test, "predictions": preds_50_0001})
+
+# Add absolute difference
+cnn_50_0001_df['abs_difference'] = abs(y_test - preds_50_0001)
+print("MAE Test:", cnn_50_0001_df['abs_difference'].mean())  # a little better than the previous
+
+# Negative samples
+negatives_df = cnn_50_0001_df.loc[cnn_50_0001_df['y_test'] == 0]
+print("MAE negative samples:", negatives_df['abs_difference'].mean())
+positives_df = cnn_50_0001_df.loc[cnn_50_0001_df['y_test'] > 0]
+print("MAE positive samples:", positives_df['abs_difference'].mean())
+
+# What is the range of predictions
+print(f'Lowest prediction: {min(preds_50_0001)}, highest prediction {max(preds_50_0001)}')
+# The model still never predict a 0
+# The model performs decently, it seems to overfit less (training los was 268.9949 in final epoch).
+# we'll increase epochs and dropout rate (as increasing the epochs will probably also increase overfitting
+
+
+
+
+#%%
+# We set epochs to 100 and dropout to 0.4 (100 is the maximum amount of epochs without failing)
+cnn_100_0001 = create_model(loss_func='mean_absolute_error', learning_rate=0.0001, dropout=0.4)
+cnn_100_0001.fit(X_train, y_train, epochs=100, batch_size=12, validation_data=(X_val, y_val))
+
+# Saving the model and weights to disk
+cnn_json = cnn_100_0001.to_json()
+with open("cnn_100_0001.json", "w") as json_file:
+    json_file.write(cnn_json)
+cnn_100_0001.save_weights("cnn_100_0001.h5")
+
+
+#%%
+"""
+Making Predictions on the regression model
+"""
+# load the model
+json_file = open('cnn_100_0001.json', 'r')
+loaded_model_json = json_file.read()
+json_file.close()
+cnn_100_0001 = model_from_json(loaded_model_json)
+cnn_100_0001.load_weights('cnn_100_0001.h5')
+cnn_100_0001.compile(optimizer='adam', loss='mean_absolute_error')
+
+# Predicting y on test-set
+preds_100_0001 = cnn_100_0001.predict(X_test)
+preds_100_0001 = np.reshape(preds_100_0001, (933,))
+cnn_100_0001_df = pd.DataFrame({"y_test": y_test, "predictions": preds_100_0001})
+
+# Add absolute difference
+cnn_100_0001_df['abs_difference'] = abs(y_test - preds_100_0001)
+print("MAE Test:", cnn_100_0001_df['abs_difference'].mean())  # a little better than the previous
+
+# Negative samples
+negatives_df = cnn_100_0001_df.loc[cnn_100_0001_df['y_test'] == 0]
+print("MAE negative samples:", negatives_df['abs_difference'].mean())
+positives_df = cnn_50_0001_df.loc[cnn_100_0001_df['y_test'] > 0]
+print("MAE positive samples:", positives_df['abs_difference'].mean())
+
+# What is the range of predictions
+print(f'Lowest prediction: {min(preds_100_0001)}, highest prediction {max(preds_100_0001)}')
+# The model still does not predict a 0
+# The model performs decently, it seems to overfit less (training los was 268.9949 in final epoch).
+# we'll increase epochs and dropout rate (as increasing the epochs will probably also increase overfitting
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 #%%
 """
 Random OverSampling
 The random oversampling is only applied on the training data, to prevent data leakage.
+# based on paper: https://link.springer.com/article/10.1186/s40537-019-0192-5
+# RandomOverSampler documentation (does not mention a maximum amount of dimensions): https://imbalanced-learn.readthedocs.io/en/stable/generated/imblearn.over_sampling.RandomOverSampler.html#imblearn.over_sampling.RandomOverSampler
 """
 # Negative samples
 y_train_negatives = [i for i in y_train_cat if i[0] == 1]
@@ -373,49 +410,24 @@ y_categorical = np.asarray(y_categorical)
 y_train_cat = y_categorical[:1865]
 y_val_cat = y_categorical[1865:2176]
 y_test_cat = y_categorical[2176:3109]
-print(y_train_cat)
+
+
 # Let's increase the amount of negative samples by 50% (=211 samples)
 ros = RandomOverSampler(sampling_strategy={0: 211}, random_state=42)
 X_train_ros, y_train_ros = ros.fit_resample(X_train, y_train_cat)
-
-# retrain the model
-#cnn_2 = create_model(optim='adam', loss_func='mean_absolute_error')
-#cnn_2.fit(X_train_ros, y_train_ros, epochs=3, batch_size=64, validation_data=(X_val, y_val))
-
-X_temp = [[1,2,3,4,5,6,7,8],[1,2,3,4,5,6,7,8],
-          [1,2,3,4,5,6,7,8],[1,2,3,4,5,6,7,8],
-          [1,2,3,4,5,6,7,8],[1,2,3,4,5,6,7,8],
-          [1,2,3,4,5,6,7,8],[1,2,3,4,5,6,7,8],
-          [1,2,3,4,5,6,7,8],[1,2,3,4,5,6,7,8],
-          [1,2,3,4,5,6,7,8],[1,2,3,4,5,6,7,8],
-          [1,2,3,4,5,6,7,8],[1,2,3,4,5,6,7,8],
-          [1,2,3,4,5,6,7,8],[1,2,3,4,5,6,7,8]]
-X_temp = np.asarray(X_temp)
-X_temp = np.reshape(X_temp, (-1,1))
-print(len(X_temp))
-y_temp = [0,1,1,1,1,1,1,0,1,1,1,0,1,1,1,0]
-print(len(y_temp))
-ros_temp = RandomOverSampler(sampling_strategy={0: 5})
-X_temp_2, y_temp_2 = ros_temp.fit_resample(X_temp, y_temp)
-print(X_temp_2)
-print(y_temp_2)
-
-#%%
-"""
-Different loss function 1
-"""
+# Does not work, since the x has to many dimension
 
 
 #%%
 """
-Different loss function 2
+Different loss function 
 categorical_crossentropy from: https://keras.io/api/losses/probabilistic_losses/#categoricalcrossentropy-function
 formula focal loss from paper: https://link.springer.com/article/10.1186/s40537-019-0192-5
 defining a custom loss function: https://heartbeat.fritz.ai/how-to-create-a-custom-loss-function-in-keras-637bd312e9ab
 """
 
 
-def focal_loss(y_true, y_pred, gamma):
+def focal_loss(y_true, y_pred):
     """
     Function re-shapes the cross entropy in order to reduce the impact that easily classified samples have on the loss.
     :param gamma:
@@ -423,19 +435,13 @@ def focal_loss(y_true, y_pred, gamma):
     :param y_pred:
     :return:
     """
-    alphas_classes = np.array([1, 0.25, 0.25, 0.25])  # Decreases values of class 2,3,4. Minority class stays the same #  TODO: update
+    alphas_classes = np.array([1, 0.25, 0.25, 0.25])  # Decreases values of class 2,3,4. Minority class stays the same
+    alphas_classes = tensorflow.convert_to_tensor(alphas_classes, dtype='float32')
     a = y_true*alphas_classes
-    a = np.amax(a, axis=1)  # returns the max (only non 0) value value of a
+    a = tensorflow.reduce_max(a)
     p = tf.keras.losses.categorical_crossentropy(y_true, y_pred)
-    fl = (-a*(1-p)**gamma) * tf.math.log(p)
+    fl = (-a*(1-p)**2) * tf.math.log(p)
     return fl
 
 
-y_t = [[0, 1, 0, 0], [1, 0, 0, 0], [0, 0, 1, 0], [0, 1, 0, 0]]
-y_p = [[0.05, 0.95, 0, 0.1], [0.3, 0.65, 0, 0.05], [0.05, 0.2, 0.7, 0.1], [0.05, 0.95, 0, 0.1]]
 
-loss = tf.keras.losses.categorical_crossentropy(y_t, y_p)
-print(loss)
-
-fl_loss = focal_loss(y_t, y_p, gamma=2)
-print(fl_loss)

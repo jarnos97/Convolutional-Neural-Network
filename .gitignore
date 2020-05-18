@@ -1,7 +1,8 @@
 y.pickle
 X.pickle
 y_categorical.pickle
-cnn.h5
-cnn.json
+cnn_50_001.h5
+cnn_50_001.json
 cnn_classifier.h5
 cnn_classifier.json
+CNN.py
